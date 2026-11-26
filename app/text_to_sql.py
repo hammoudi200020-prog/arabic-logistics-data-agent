@@ -6,6 +6,7 @@ import psycopg2
 
 import llm
 from db import get_schema, run_query
+from semantic_layer import BUSINESS_RULES
 
 MAX_ATTEMPTS = 3
 
@@ -13,6 +14,8 @@ SQL_PROMPT = """You are an expert PostgreSQL analyst for a Saudi logistics compa
 
 Database schema:
 {schema}
+
+{business_rules}
 
 Rules:
 - Write ONE PostgreSQL SELECT query that answers the question.
@@ -39,7 +42,7 @@ Result rows (up to 50):
 {rows}
 
 Write a short, clear answer for the manager:
-- Answer in the SAME language as the question (Arabic question -> Arabic answer, English -> English).
+- You MUST answer in {language}.
 - Use the actual numbers from the result.
 - 1 to 4 sentences. No SQL, no technical words.
 - If the result is empty, say that no data was found.
@@ -66,6 +69,11 @@ def clean_sql(text):
     return text.strip().rstrip(";")
 
 
+def detect_language(text):
+    """Arabic if the question has any Arabic letters, otherwise English."""
+    return "Arabic" if any("\u0600" <= ch <= "\u06FF" for ch in text) else "English"
+
+
 def check_safe(sql):
     """Safety layer 2: only read queries are allowed (layer 1 is the read-only DB connection)."""
     first_word = sql.strip().split()[0].upper() if sql.strip() else ""
@@ -78,7 +86,9 @@ def generate_and_run(question, demo_error=False):
     history = []
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        prompt = SQL_PROMPT.format(schema=cached_schema(), question=question)
+        prompt = SQL_PROMPT.format(
+            schema=cached_schema(), business_rules=BUSINESS_RULES, question=question
+        )
         if history:
             past = "\n".join(
                 f"Attempt {i}:\nSQL: {h['sql']}\nERROR: {h['error']}\n"
@@ -107,7 +117,11 @@ def generate_and_run(question, demo_error=False):
 def explain_result(question, sql, columns, rows):
     rows_text = "\n".join(str(tuple(str(v) for v in row)) for row in rows[:50])
     prompt = ANSWER_PROMPT.format(
-        question=question, sql=sql, columns=columns, rows=rows_text or "(no rows)"
+        question=question,
+        sql=sql,
+        columns=columns,
+        rows=rows_text or "(no rows)",
+        language=detect_language(question),
     )
     return llm.ask_model(prompt).strip()
 
